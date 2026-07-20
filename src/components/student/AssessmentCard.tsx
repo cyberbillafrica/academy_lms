@@ -6,8 +6,7 @@ interface AssessmentCardProps {
   task: any;
   onViewFeedback?: (task: any) => void;
 }
-
-const iconMap: Record<string, JSX.Element> = {
+const iconMap: Record<string, React.ReactNode> = {
   assignment: <FileText className="w-5 h-5 text-blue-600" />,
   quiz: <ClipboardCheck className="w-5 h-5 text-purple-600" />,
   project: <FolderKanban className="w-5 h-5 text-orange-600" />,
