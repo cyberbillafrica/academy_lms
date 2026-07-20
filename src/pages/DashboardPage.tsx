@@ -40,6 +40,7 @@ import {
   type DirectMessage,
 } from "../hooks/studentData";
 
+const CCard = CollapsibleCard as any;
 // ── Helpers ────────────────────────────────────
 function getRelativeDeadline(dateString: string | null): { text: string; isUrgent: boolean } {
   if (!dateString) return { text: "No due date set", isUrgent: false };
@@ -540,7 +541,7 @@ export default function DashboardPage() {
                                   />
                                   <button
                                     onClick={() => handleSubmitAssessment(asm.id)}
-                                    disabled={submitAssessment.isLoading}
+                                    disabled={submitAssessment.isPending}
                                     className="bg-[#3AAA35] text-white text-xs font-bold px-4 py-2 rounded"
                                   >
                                     Turn In
@@ -614,7 +615,7 @@ export default function DashboardPage() {
             {/* Right Column */}
             <div className="space-y-6">
               {/* Inbox */}
-              <CollapsibleCard title={`✉️ Your Inbox (${unreadCount} New)`} defaultOpen={true} onToggle={(isOpen) => { if(isOpen) handleMarkInboxAsRead(); }}>
+              <CCard title={`✉️ Your Inbox (${unreadCount} New)`} defaultOpen={true} onToggle={(isOpen) => { if(isOpen) handleMarkInboxAsRead(); }}>
                 <div className="space-y-4 max-h-[450px] overflow-y-auto pr-1 p-1">
                   {messages.length === 0 ? (
                     <p className="text-xs text-gray-400 text-center py-4">Communication inbox is empty.</p>
@@ -653,7 +654,7 @@ export default function DashboardPage() {
                     })
                   )}
                 </div>
-              </CollapsibleCard>
+              </CCard>
 
               {/* Announcements */}
               <CollapsibleCard title="📢 Announcements" defaultOpen={true}>

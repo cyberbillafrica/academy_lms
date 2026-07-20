@@ -57,9 +57,8 @@ export default function QuizEngine({
   const title = assessment?.title ?? propTitle ?? "";
   const type = (assessment?.assessment_type ?? propType ?? "Quiz") as "Quiz" | "Exam";
   const timeLimitMinutes = assessment?.time_limit_minutes ?? propTimeLimitMinutes ?? null;
-  const moduleTitle = assessment?.modules?.title ?? "";
-  const moduleOrder = assessment?.modules?.module_order ?? null;
-
+  const moduleTitle = assessment?.modules?.[0]?.title ?? "";
+  const moduleOrder = assessment?.modules?.[0]?.module_order ?? null;
   const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [currentPage, setCurrentPage] = useState(0);

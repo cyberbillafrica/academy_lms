@@ -1,3 +1,4 @@
+import React from 'react';
 import { Link } from "react-router-dom";
 import { CalendarDays, Clock3, BookOpen, Award, FileText, ClipboardCheck, FolderKanban, GraduationCap } from "lucide-react";
 

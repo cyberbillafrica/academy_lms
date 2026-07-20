@@ -1,3 +1,4 @@
+import React from 'react';
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import Papa from "papaparse";
 import { useNavigate } from "react-router-dom";
