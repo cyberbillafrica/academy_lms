@@ -17,7 +17,7 @@ export default function StudentSubmissionsPage() {
   const profile = useAuthStore((s) => s.profile);
   const navigate = useNavigate();
 
-  const { data: submissions = [], isLoading } = useStudentSubmissions(profile?.id);
+  const { data: submissions = [], isPending } = useStudentSubmissions(profile?.id);
   const resubmitMutation = useResubmitSubmission();
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -58,7 +58,7 @@ export default function StudentSubmissionsPage() {
       </header>
 
       <main className="max-w-5xl mx-auto p-6">
-        {isLoading ? (
+        {isPending ? (
           <div className="flex justify-center py-12"><div className="w-10 h-10 border-4 border-[#3AAA35] border-t-transparent rounded-full animate-spin" /></div>
         ) : submissions.length === 0 ? (
           <div className="text-center py-12 text-gray-500">No submissions yet.</div>
@@ -112,7 +112,7 @@ export default function StudentSubmissionsPage() {
                         className="flex-1 text-xs border rounded px-3 py-1.5"
                         placeholder="New project URL"
                       />
-                      <button onClick={() => handleResubmit(sub)} disabled={resubmitMutation.isLoading} className="bg-[#3AAA35] text-white text-xs font-bold px-3 py-1.5 rounded">
+                      <button onClick={() => handleResubmit(sub)} disabled={resubmitMutation.isPending} className="bg-[#3AAA35] text-white text-xs font-bold px-3 py-1.5 rounded">
                         Save
                       </button>
                       <button onClick={() => setEditingId(null)} className="text-xs text-gray-500">Cancel</button>
