@@ -107,7 +107,7 @@ export default function AssessmentsPage() {
         .select(`id, title, module_order, courses ( id, title )`)
         .order("module_order");
       if (error) throw error;
-      setModules(data || []);
+     setModules(data as unknown as Module[]);
     } catch (err: any) {
       console.error("Failed loading modules:", err.message);
     }

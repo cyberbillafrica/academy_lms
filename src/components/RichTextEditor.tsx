@@ -420,8 +420,7 @@ export default function UltimateRichTextEditor({
           onChange={(e) => {
             const value = e.target.value;
             if (value === "paragraph") editor.chain().focus().setParagraph().run();
-            else editor.chain().focus().toggleHeading({ level: parseInt(value) }).run();
-          }}
+          else editor.chain().focus().toggleHeading({ level: parseInt(value) as 1 | 2 | 3 | 4 | 5 | 6 }).run();   }}
           className="px-2 py-1 rounded text-sm bg-gray-200 hover:bg-gray-300"
           value={editor.isActive("heading") ? editor.getAttributes("heading").level : "paragraph"}
         >
@@ -473,15 +472,15 @@ export default function UltimateRichTextEditor({
           <option value="" disabled>&lt;/&gt; Code</option>
           {codeLanguages.map((lang) => (<option key={lang} value={lang}>{lang}</option>))}
         </select>
-        <button type="button" onClick={() => editor.chain().focus().toggleTerminalBlock().run()} className={`px-2 py-1 rounded text-sm ${editor.isActive("terminalBlock") ? "bg-cyan-600 text-white" : "bg-gray-200 hover:bg-gray-300"}`} title="Terminal output block">💻 Terminal</button>
+        <button type="button" onClick={() => (editor.chain().focus() as any).toggleTerminalBlock().run()} className={`px-2 py-1 rounded text-sm ${editor.isActive("terminalBlock") ? "bg-cyan-600 text-white" : "bg-gray-200 hover:bg-gray-300"}`} title="Terminal output block">💻 Terminal</button>
 
         <div className="relative">
           <button type="button" onClick={() => setShowCalloutMenu(!showCalloutMenu)} className="px-2 py-1 rounded text-sm bg-gray-200 hover:bg-gray-300">📌 Callout</button>
           {showCalloutMenu && (
             <div className="absolute top-full left-0 mt-1 bg-white border rounded-lg shadow-lg z-30 min-w-32">
-              <button type="button" onClick={() => { editor.chain().focus().setCallout("warning").run(); setShowCalloutMenu(false); }} className="block w-full text-left px-4 py-2 hover:bg-gray-100 text-sm">⚠️ Warning</button>
-              <button type="button" onClick={() => { editor.chain().focus().setCallout("note").run(); setShowCalloutMenu(false); }} className="block w-full text-left px-4 py-2 hover:bg-gray-100 text-sm">📝 Note</button>
-              <button type="button" onClick={() => { editor.chain().focus().setCallout("tip").run(); setShowCalloutMenu(false); }} className="block w-full text-left px-4 py-2 hover:bg-gray-100 text-sm">💡 Tip</button>
+              <button type="button" onClick={() => { (editor.chain().focus() as any).setCallout("warning").run(); setShowCalloutMenu(false); }} className="block w-full text-left px-4 py-2 hover:bg-gray-100 text-sm">⚠️ Warning</button>
+              <button type="button" onClick={() => { (editor.chain().focus() as any).setCallout("note").run(); setShowCalloutMenu(false); }} className="block w-full text-left px-4 py-2 hover:bg-gray-100 text-sm">📝 Note</button>
+              <button type="button" onClick={() => { (editor.chain().focus() as any).setCallout("tip").run(); setShowCalloutMenu(false); }} className="block w-full text-left px-4 py-2 hover:bg-gray-100 text-sm">💡 Tip</button>
             </div>
           )}
         </div>
@@ -517,7 +516,7 @@ export default function UltimateRichTextEditor({
                 <button type="button" key={color.value} onClick={() => editor.chain().focus().toggleHighlight({ color: color.value }).run()} className="w-7 h-7 rounded border-2 border-gray-300 hover:scale-110 transition-transform" style={{ backgroundColor: color.value }} title={`Highlight ${color.name}`} />
               ))}
             </div>
-            <input type="color" onInput={(e) => editor.chain().focus().setColor(e.target.value).run()} className="w-7 h-7 border rounded cursor-pointer" title="Custom color" />
+            <input type="color" onInput={(e) => editor.chain().focus().setColor((e.target as HTMLInputElement).value).run()} className="w-7 h-7 border rounded cursor-pointer" title="Custom color" />
             <button type="button" onClick={() => editor.chain().focus().unsetHighlight().run()} className="px-2 py-1 text-xs bg-gray-200 rounded hover:bg-gray-300">Clear Highlight</button>
             <div className="relative">
               <button type="button" onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="px-2 py-1 rounded text-sm bg-gray-200 hover:bg-gray-300">😊 Emoji</button>
