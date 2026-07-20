@@ -277,7 +277,7 @@ export default function RegisterPage() {
             </div>
             <h2 className="text-2xl font-bold text-white">Congratulations!</h2>
             <p className="text-gray-300 text-sm">
-              Your registration was successful. Please log in to your account.
+              Your registration was successful. Please Proceed to Slog in to your account.
             </p>
             <button
               onClick={() => navigate("/login")}

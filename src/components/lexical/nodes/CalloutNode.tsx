@@ -1,5 +1,5 @@
-import { DecoratorNode, NodeKey, SerializedLexicalNode, Spread } from 'lexical';
-import { ReactNode } from 'react';
+import type { DecoratorNode, NodeKey, SerializedLexicalNode, Spread } from 'lexical';
+import type { ReactNode } from 'react';
 
 export type CalloutType = 'note' | 'tip' | 'warning';
 
