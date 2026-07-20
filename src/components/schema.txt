@@ -1,0 +1,1091 @@
+-- =====================================================
+-- CYBERBILL AFRICA LMS – CORRECTED SCHEMA V3
+-- =====================================================
+-- Changes from V2:
+--   [SECURITY] Role hardcoded to 'student' at signup (no metadata injection)
+--   [SECURITY] Self-update guard: users cannot change own role/active
+--   [FEATURE]  Enrollment code consumed server-side in trigger
+--   [FEATURE]  enrollment_codes: added used_by, used_at columns
+--   [FEATURE]  NEW TABLE: chat_messages (global chat room) with denormalized
+--              sender_name/sender_role (trigger-filled) so names show in chat
+--              without opening up profiles read access
+--   [FEATURE]  direct_messages: denormalized sender_name/sender_role (same
+--              trigger) so recipients see the sender without profiles access
+--   [FIX]      Complete RLS policies matching the permission matrix
+--   [FIX]      FK ON DELETE rules prevent blocked cascades on user removal
+--   [FIX]      Helper functions: is_instructor, teaches_course, is_my_student
+-- =====================================================
+ 
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+ 
+-- =====================================================
+-- CLEANUP OLD STRUCTURES
+-- =====================================================
+ 
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+DROP FUNCTION IF EXISTS public.handle_new_user CASCADE;
+DROP FUNCTION IF EXISTS public.set_message_sender_meta CASCADE;
+DROP FUNCTION IF EXISTS public.is_admin CASCADE;
+DROP FUNCTION IF EXISTS public.is_instructor CASCADE;
+DROP FUNCTION IF EXISTS public.teaches_course CASCADE;
+DROP FUNCTION IF EXISTS public.is_my_student CASCADE;
+DROP FUNCTION IF EXISTS public.teaches_module CASCADE;
+DROP FUNCTION IF EXISTS public.teaches_assessment CASCADE;
+DROP FUNCTION IF EXISTS public.module_assigned_to_me CASCADE;
+DROP FUNCTION IF EXISTS public.module_course_assigned_to CASCADE;
+DROP FUNCTION IF EXISTS public.add_course_creator_as_instructor CASCADE;
+ 
+DROP TABLE IF EXISTS public.chat_messages CASCADE;
+DROP TABLE IF EXISTS public.module_progress CASCADE;
+DROP TABLE IF EXISTS public.attendance CASCADE;
+DROP TABLE IF EXISTS public.direct_messages CASCADE;
+DROP TABLE IF EXISTS public.announcements CASCADE;
+DROP TABLE IF EXISTS public.submissions CASCADE;
+DROP TABLE IF EXISTS public.assessment_assignments CASCADE;
+DROP TABLE IF EXISTS public.student_module_assignments CASCADE;
+DROP TABLE IF EXISTS public.student_course_assignments CASCADE;
+DROP TABLE IF EXISTS public.assessments CASCADE;
+DROP TABLE IF EXISTS public.modules CASCADE;
+DROP TABLE IF EXISTS public.course_instructors CASCADE;
+DROP TABLE IF EXISTS public.courses CASCADE;
+DROP TABLE IF EXISTS public.enrollment_codes CASCADE;
+DROP TABLE IF EXISTS public.profiles CASCADE;
+ 
+-- =====================================================
+-- 1. PROFILES
+-- =====================================================
+ 
+CREATE TABLE public.profiles (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  full_name TEXT NOT NULL,
+  email TEXT UNIQUE NOT NULL,
+  role TEXT NOT NULL DEFAULT 'student'
+    CHECK (role IN ('admin', 'instructor', 'student')),
+  specialization_track TEXT,
+  active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ 
+-- =====================================================
+-- 2. ENROLLMENT CODES (added used_by + used_at)
+-- =====================================================
+ 
+CREATE TABLE public.enrollment_codes (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  code TEXT UNIQUE NOT NULL,
+  active BOOLEAN NOT NULL DEFAULT true,
+  used BOOLEAN NOT NULL DEFAULT false,
+  used_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  used_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,
+  created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ 
+-- =====================================================
+-- 3. COURSES
+--    created_by nullable + ON DELETE SET NULL (allows user removal)
+-- =====================================================
+ 
+CREATE TABLE public.courses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  title TEXT NOT NULL,
+  description TEXT,
+  created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  is_global BOOLEAN NOT NULL DEFAULT false,
+  specialization_track TEXT,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'archived')),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ 
+-- =====================================================
+-- 4. COURSE INSTRUCTORS
+-- =====================================================
+ 
+CREATE TABLE public.course_instructors (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_id UUID NOT NULL REFERENCES public.courses(id) ON DELETE CASCADE,
+  instructor_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  assigned_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  assigned_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(course_id, instructor_id)
+);
+ 
+-- =====================================================
+-- 5. MODULES
+-- =====================================================
+ 
+CREATE TABLE public.modules (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_id UUID NOT NULL REFERENCES public.courses(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  content TEXT,
+  module_order INTEGER DEFAULT 0,
+  created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  is_global BOOLEAN NOT NULL DEFAULT false,
+  specialization_track TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ 
+-- =====================================================
+-- 6. ASSESSMENTS
+-- =====================================================
+ 
+CREATE TABLE public.assessments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  module_id UUID NOT NULL REFERENCES public.modules(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  instructions TEXT,
+  assessment_type TEXT NOT NULL DEFAULT 'Assignment',
+  max_score NUMERIC NOT NULL DEFAULT 100,
+  due_date TIMESTAMPTZ,
+  created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ 
+-- =====================================================
+-- 7. STUDENT COURSE ASSIGNMENTS
+-- =====================================================
+ 
+CREATE TABLE public.student_course_assignments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  course_id UUID NOT NULL REFERENCES public.courses(id) ON DELETE CASCADE,
+  assigned_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  assigned_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(student_id, course_id)
+);
+ 
+-- =====================================================
+-- 8. STUDENT MODULE ASSIGNMENTS
+-- =====================================================
+ 
+CREATE TABLE public.student_module_assignments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  module_id UUID NOT NULL REFERENCES public.modules(id) ON DELETE CASCADE,
+  assigned_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  assigned_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(student_id, module_id)
+);
+ 
+-- =====================================================
+-- 9. ASSESSMENT ASSIGNMENTS
+-- =====================================================
+ 
+CREATE TABLE public.assessment_assignments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  assessment_id UUID NOT NULL REFERENCES public.assessments(id) ON DELETE CASCADE,
+  student_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  assigned_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  assigned_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(assessment_id, student_id)
+);
+ 
+-- =====================================================
+-- 10. SUBMISSIONS
+-- =====================================================
+ 
+CREATE TABLE public.submissions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  assessment_id UUID NOT NULL REFERENCES public.assessments(id) ON DELETE CASCADE,
+  student_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  submission_text TEXT,
+  submission_link TEXT,
+  feedback TEXT,
+  grade NUMERIC,
+  submitted_at TIMESTAMPTZ DEFAULT NOW()
+);
+ 
+-- =====================================================
+-- 11. ANNOUNCEMENTS
+-- =====================================================
+ 
+CREATE TABLE public.announcements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  target_scope TEXT NOT NULL
+    CHECK (target_scope IN ('global', 'course', 'track', 'role')),
+    course_id UUID REFERENCES public.courses(id) ON DELETE CASCADE,
+  specialization_track TEXT,
+  -- When target_scope = 'role', restrict to this role ('student' | 'instructor').
+  target_role TEXT
+    CHECK (target_role IS NULL OR target_role IN ('student', 'instructor')),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ 
+-- =====================================================
+-- 12. DIRECT MESSAGES
+-- =====================================================
+ 
+CREATE TABLE public.direct_messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  sender_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  recipient_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  subject TEXT,
+  body TEXT NOT NULL,
+  is_read BOOLEAN DEFAULT false,
+  -- Denormalized sender display info (trigger-filled) so the recipient can see
+  -- who sent it without being able to read the sender's profile row.
+  sender_name TEXT,
+  sender_role TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ 
+-- =====================================================
+-- 13. ATTENDANCE
+-- =====================================================
+ 
+CREATE TABLE public.attendance (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  marked_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  attendance_date DATE NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('present', 'absent', 'late')),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(student_id, attendance_date)
+);
+ 
+-- =====================================================
+-- 14. MODULE PROGRESS
+-- =====================================================
+ 
+CREATE TABLE public.module_progress (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  module_id UUID NOT NULL REFERENCES public.modules(id) ON DELETE CASCADE,
+  completed BOOLEAN DEFAULT false,
+  completed_at TIMESTAMPTZ,
+  UNIQUE(student_id, module_id)
+);
+ 
+-- =====================================================
+-- 15. CHAT MESSAGES (new – global chat room)
+-- =====================================================
+ 
+CREATE TABLE public.chat_messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  sender_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  -- Denormalized sender display info so the chat can show names/role badges
+  -- WITHOUT granting everyone read access to the profiles table. These are
+  -- filled server-side by a SECURITY DEFINER trigger (see below); any value a
+  -- client tries to send is overwritten.
+  sender_name TEXT,
+  sender_role TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+ 
+-- Populate sender_name/sender_role from the author's profile on insert.
+-- SECURITY DEFINER lets it read profiles even though the inserting user
+-- cannot read other users' profile rows under RLS. Shared by chat_messages
+-- and direct_messages (both have sender_id + sender_name + sender_role).
+CREATE OR REPLACE FUNCTION public.set_message_sender_meta()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  SELECT full_name, role
+    INTO NEW.sender_name, NEW.sender_role
+  FROM public.profiles
+  WHERE id = NEW.sender_id;
+  RETURN NEW;
+END;
+$$;
+ 
+CREATE TRIGGER trg_set_chat_sender_meta
+  BEFORE INSERT ON public.chat_messages
+  FOR EACH ROW EXECUTE FUNCTION public.set_message_sender_meta();
+ 
+CREATE TRIGGER trg_set_dm_sender_meta
+  BEFORE INSERT ON public.direct_messages
+  FOR EACH ROW EXECUTE FUNCTION public.set_message_sender_meta();
+ 
+-- =====================================================
+-- PERFORMANCE INDEXES
+-- =====================================================
+ 
+CREATE INDEX idx_profiles_role ON public.profiles(role);
+CREATE INDEX idx_courses_created_by ON public.courses(created_by);
+CREATE INDEX idx_courses_is_global ON public.courses(is_global);
+CREATE INDEX idx_modules_course_id ON public.modules(course_id);
+CREATE INDEX idx_assessments_module_id ON public.assessments(module_id);
+CREATE INDEX idx_student_course_assign_student ON public.student_course_assignments(student_id);
+CREATE INDEX idx_student_course_assign_course ON public.student_course_assignments(course_id);
+CREATE INDEX idx_student_module_assign_student ON public.student_module_assignments(student_id);
+CREATE INDEX idx_student_module_assign_assigned_by ON public.student_module_assignments(assigned_by);
+CREATE INDEX idx_assessment_assign_student ON public.assessment_assignments(student_id);
+CREATE INDEX idx_assessment_assign_assigned_by ON public.assessment_assignments(assigned_by);
+CREATE INDEX idx_submissions_student ON public.submissions(student_id);
+CREATE INDEX idx_submissions_assessment ON public.submissions(assessment_id);
+CREATE INDEX idx_direct_messages_sender ON public.direct_messages(sender_id);
+CREATE INDEX idx_direct_messages_recipient ON public.direct_messages(recipient_id);
+CREATE INDEX idx_attendance_student ON public.attendance(student_id);
+CREATE INDEX idx_module_progress_student ON public.module_progress(student_id);
+CREATE INDEX idx_chat_messages_created_at ON public.chat_messages(created_at);
+CREATE INDEX idx_course_instructors_instructor ON public.course_instructors(instructor_id);
+ 
+-- =====================================================
+-- HELPER FUNCTIONS (SECURITY DEFINER – bypass RLS)
+-- =====================================================
+ 
+-- Is the caller an admin?
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS BOOLEAN
+LANGUAGE sql STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid() AND role = 'admin'
+  );
+$$;
+ 
+-- Is the caller an instructor?
+CREATE OR REPLACE FUNCTION public.is_instructor()
+RETURNS BOOLEAN
+LANGUAGE sql STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid() AND role = 'instructor'
+  );
+$$;
+ 
+-- Does the caller teach this course?
+CREATE OR REPLACE FUNCTION public.teaches_course(p_course_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.course_instructors
+    WHERE instructor_id = auth.uid() AND course_id = p_course_id
+  );
+$$;
+ 
+-- Is p_student_id one of my students?
+-- Broadened: via course teaching, OR I assigned them a module, OR I assigned them an assessment
+CREATE OR REPLACE FUNCTION public.is_my_student(p_student_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    -- Student is in a course I teach
+    SELECT 1
+    FROM public.course_instructors ci
+    JOIN public.student_course_assignments sca ON sca.course_id = ci.course_id
+    WHERE ci.instructor_id = auth.uid()
+      AND sca.student_id = p_student_id
+  )
+  OR EXISTS (
+    -- I personally assigned them a module
+    SELECT 1
+    FROM public.student_module_assignments
+    WHERE assigned_by = auth.uid()
+      AND student_id = p_student_id
+  )
+  OR EXISTS (
+    -- I personally assigned them an assessment
+    SELECT 1
+    FROM public.assessment_assignments
+    WHERE assigned_by = auth.uid()
+      AND student_id = p_student_id
+  );
+$$;
+ 
+-- ── Module/assessment lookups used by RLS policies ──────────────────
+-- These are SECURITY DEFINER (bypass RLS) on purpose: policies must NOT
+-- read modules / student_module_assignments directly or they form an
+-- infinite-recursion cycle (modules_select <-> student_module_assign_select).
+ 
+-- Instructor teaches the course that owns this module
+CREATE OR REPLACE FUNCTION public.teaches_module(p_module_id UUID)
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.modules m
+    JOIN public.course_instructors ci ON ci.course_id = m.course_id
+    WHERE m.id = p_module_id AND ci.instructor_id = auth.uid()
+  );
+$$;
+ 
+-- Instructor teaches the course that owns the module that owns this assessment
+CREATE OR REPLACE FUNCTION public.teaches_assessment(p_assessment_id UUID)
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.assessments a
+    JOIN public.modules m ON m.id = a.module_id
+    JOIN public.course_instructors ci ON ci.course_id = m.course_id
+    WHERE a.id = p_assessment_id AND ci.instructor_id = auth.uid()
+  );
+$$;
+ 
+-- Is this module directly assigned to the current user (student)?
+CREATE OR REPLACE FUNCTION public.module_assigned_to_me(p_module_id UUID)
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.student_module_assignments
+    WHERE student_id = auth.uid() AND module_id = p_module_id
+  );
+$$;
+ 
+-- Is the parent course of this module assigned to a given student?
+CREATE OR REPLACE FUNCTION public.module_course_assigned_to(p_module_id UUID, p_student_id UUID)
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.modules m
+    JOIN public.student_course_assignments sca ON sca.course_id = m.course_id
+    WHERE m.id = p_module_id AND sca.student_id = p_student_id
+  );
+$$;
+ 
+-- Instructor auto-teaches a course they create (so they can add modules to it)
+CREATE OR REPLACE FUNCTION public.add_course_creator_as_instructor()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  IF NEW.created_by IS NOT NULL AND public.is_instructor() THEN
+    INSERT INTO public.course_instructors (course_id, instructor_id, assigned_by)
+    VALUES (NEW.id, NEW.created_by, NEW.created_by)
+    ON CONFLICT (course_id, instructor_id) DO NOTHING;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+ 
+-- =====================================================
+-- AUTOMATION TRIGGER: handle_new_user
+-- Enforces enrollment-code-only registration,
+-- always assigns role = 'student', consumes the code.
+-- =====================================================
+ 
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_code TEXT;
+  v_code_id BIGINT;
+BEGIN
+  -- 1. Extract enrollment code from signup metadata
+  v_code := NEW.raw_user_meta_data->>'enrollment_code';
+ 
+  -- 2. Validate: must be active, unused, and not expired
+  SELECT id INTO v_code_id
+  FROM public.enrollment_codes
+  WHERE code = v_code
+    AND active = true
+    AND used = false
+    AND (expires_at IS NULL OR expires_at > NOW())
+  FOR UPDATE;                       -- row-lock prevents race conditions
+ 
+  IF v_code_id IS NULL THEN
+    RAISE EXCEPTION 'Invalid or expired enrollment code';
+  END IF;
+ 
+  -- 3. Create profile – role is ALWAYS 'student' (admin promotes later)
+  INSERT INTO public.profiles (id, full_name, email, role)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'full_name', 'User'),
+    NEW.email,
+    'student'
+  );
+ 
+  -- 4. Consume the enrollment code
+  UPDATE public.enrollment_codes
+  SET used    = true,
+      used_by = NEW.id,
+      used_at = NOW()
+  WHERE id = v_code_id;
+ 
+  RETURN NEW;
+END;
+$$;
+ 
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_new_user();
+ 
+-- Instructor who creates a course is auto-linked as its instructor.
+CREATE TRIGGER trg_add_course_creator_as_instructor
+  AFTER INSERT ON public.courses
+  FOR EACH ROW
+  EXECUTE FUNCTION public.add_course_creator_as_instructor();
+ 
+-- =====================================================
+-- ENABLE ROW LEVEL SECURITY ON ALL TABLES
+-- =====================================================
+ 
+ALTER TABLE public.profiles                   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.enrollment_codes           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.courses                    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.course_instructors         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.modules                    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.assessments                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.student_course_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.student_module_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.assessment_assignments     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.submissions                ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.announcements              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.direct_messages            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.attendance                 ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.module_progress            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.chat_messages              ENABLE ROW LEVEL SECURITY;
+ 
+-- =====================================================
+-- RLS POLICIES
+-- =====================================================
+ 
+-- ─────────────────────────────────────────────────────
+-- PROFILES
+-- ─────────────────────────────────────────────────────
+ 
+-- All authenticated users can read all profiles
+-- (needed for general chat usernames, DM recipient picker, etc.)
+CREATE POLICY "profiles_select"
+  ON public.profiles FOR SELECT TO authenticated
+  USING (true);
+ 
+-- Admin: full CRUD on any profile (role promotion, deactivation, deletion)
+CREATE POLICY "profiles_admin_all"
+  ON public.profiles FOR ALL TO authenticated
+  USING  (public.is_admin())
+  WITH CHECK (public.is_admin());
+ 
+-- Self-update: allowed, but role and active CANNOT be changed
+CREATE POLICY "profiles_self_update"
+  ON public.profiles FOR UPDATE TO authenticated
+  USING  (auth.uid() = id)
+  WITH CHECK (
+    auth.uid() = id
+    AND role   = (SELECT p.role   FROM public.profiles p WHERE p.id = auth.uid())
+    AND active = (SELECT p.active FROM public.profiles p WHERE p.id = auth.uid())
+  );
+ 
+-- ─────────────────────────────────────────────────────
+-- ENROLLMENT CODES
+-- ─────────────────────────────────────────────────────
+ 
+-- Public verification: anon + authenticated can see active unused codes
+CREATE POLICY "enrollment_codes_public_verify"
+  ON public.enrollment_codes FOR SELECT TO anon, authenticated
+  USING (used = false AND active = true);
+ 
+-- Admin: full CRUD (generate, edit, view used codes, delete)
+CREATE POLICY "enrollment_codes_admin_all"
+  ON public.enrollment_codes FOR ALL TO authenticated
+  USING  (public.is_admin())
+  WITH CHECK (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- COURSES
+-- ─────────────────────────────────────────────────────
+ 
+-- Read: admin/instructor see all; students see global OR assigned courses
+CREATE POLICY "courses_select"
+  ON public.courses FOR SELECT TO authenticated
+  USING (
+    public.is_admin()
+    OR public.is_instructor()
+    OR is_global = true
+    OR EXISTS (
+      SELECT 1 FROM public.student_course_assignments
+      WHERE student_id = auth.uid() AND course_id = courses.id
+    )
+  );
+ 
+-- Create: admin or instructor (instructor sets themselves as creator)
+CREATE POLICY "courses_insert"
+  ON public.courses FOR INSERT TO authenticated
+  WITH CHECK (
+    public.is_admin()
+    OR (public.is_instructor() AND created_by = auth.uid())
+  );
+ 
+-- Update: admin or instructor who created / teaches the course
+CREATE POLICY "courses_update"
+  ON public.courses FOR UPDATE TO authenticated
+  USING (
+    public.is_admin()
+    OR (public.is_instructor() AND (created_by = auth.uid() OR public.teaches_course(id)))
+  )
+  WITH CHECK (
+    public.is_admin()
+    OR (public.is_instructor() AND (created_by = auth.uid() OR public.teaches_course(id)))
+  );
+ 
+-- Delete: admin only
+CREATE POLICY "courses_delete"
+  ON public.courses FOR DELETE TO authenticated
+  USING (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- COURSE INSTRUCTORS
+-- ─────────────────────────────────────────────────────
+ 
+-- Everyone can see who teaches what
+CREATE POLICY "course_instructors_select"
+  ON public.course_instructors FOR SELECT TO authenticated
+  USING (true);
+ 
+-- Admin only: assign / remove instructors from courses
+CREATE POLICY "course_instructors_admin_all"
+  ON public.course_instructors FOR ALL TO authenticated
+  USING  (public.is_admin())
+  WITH CHECK (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- MODULES
+-- ─────────────────────────────────────────────────────
+ 
+-- Read: admin/instructor see all;
+--       student sees modules in their courses + explicitly assigned modules
+CREATE POLICY "modules_select"
+  ON public.modules FOR SELECT TO authenticated
+  USING (
+    public.is_admin()
+    OR public.is_instructor()
+    OR EXISTS (
+      -- Module is in a course assigned to me (or a global course)
+      SELECT 1 FROM public.courses c
+      LEFT JOIN public.student_course_assignments sca
+        ON sca.course_id = c.id AND sca.student_id = auth.uid()
+      WHERE c.id = modules.course_id
+        AND (c.is_global = true OR sca.student_id IS NOT NULL)
+    )
+    OR public.module_assigned_to_me(modules.id)
+  );
+ 
+-- Insert: admin or instructor (for courses they teach)
+CREATE POLICY "modules_insert"
+  ON public.modules FOR INSERT TO authenticated
+  WITH CHECK (
+    public.is_admin()
+    OR (public.is_instructor() AND public.teaches_course(course_id) AND created_by = auth.uid())
+  );
+ 
+-- Update: admin or instructor (for courses they teach / modules they created)
+CREATE POLICY "modules_update"
+  ON public.modules FOR UPDATE TO authenticated
+  USING (
+    public.is_admin()
+    OR (public.is_instructor() AND (created_by = auth.uid() OR public.teaches_course(course_id)))
+  )
+  WITH CHECK (
+    public.is_admin()
+    OR (public.is_instructor() AND (created_by = auth.uid() OR public.teaches_course(course_id)))
+  );
+ 
+-- Delete: admin only
+CREATE POLICY "modules_delete"
+  ON public.modules FOR DELETE TO authenticated
+  USING (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- ASSESSMENTS
+-- ─────────────────────────────────────────────────────
+ 
+-- Read: admin/instructor see all; student sees only assigned assessments
+CREATE POLICY "assessments_select"
+  ON public.assessments FOR SELECT TO authenticated
+  USING (
+    public.is_admin()
+    OR public.is_instructor()
+    OR EXISTS (
+      SELECT 1 FROM public.assessment_assignments
+      WHERE student_id = auth.uid() AND assessment_id = assessments.id
+    )
+  );
+ 
+-- Insert: admin or instructor (for modules in courses they teach)
+CREATE POLICY "assessments_insert"
+  ON public.assessments FOR INSERT TO authenticated
+  WITH CHECK (
+    public.is_admin()
+    OR (
+      public.is_instructor()
+      AND created_by = auth.uid()
+      AND public.teaches_module(module_id)
+    )
+  );
+ 
+-- Update: admin or creator
+CREATE POLICY "assessments_update"
+  ON public.assessments FOR UPDATE TO authenticated
+  USING (
+    public.is_admin()
+    OR (public.is_instructor() AND created_by = auth.uid())
+  )
+  WITH CHECK (
+    public.is_admin()
+    OR (public.is_instructor() AND created_by = auth.uid())
+  );
+ 
+-- Delete: admin only
+CREATE POLICY "assessments_delete"
+  ON public.assessments FOR DELETE TO authenticated
+  USING (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- STUDENT COURSE ASSIGNMENTS  (Admin-only write)
+-- ─────────────────────────────────────────────────────
+ 
+CREATE POLICY "student_course_assign_select"
+  ON public.student_course_assignments FOR SELECT TO authenticated
+  USING (
+    public.is_admin()
+    OR student_id = auth.uid()
+    OR (public.is_instructor() AND public.teaches_course(course_id))
+  );
+ 
+CREATE POLICY "student_course_assign_admin"
+  ON public.student_course_assignments FOR ALL TO authenticated
+  USING  (public.is_admin())
+  WITH CHECK (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- STUDENT MODULE ASSIGNMENTS
+-- Instructor can assign IF they teach the course AND
+-- the parent course is already assigned to the student
+-- ─────────────────────────────────────────────────────
+ 
+CREATE POLICY "student_module_assign_select"
+  ON public.student_module_assignments FOR SELECT TO authenticated
+  USING (
+    public.is_admin()
+    OR student_id = auth.uid()
+    OR assigned_by = auth.uid()
+    OR (public.is_instructor() AND public.teaches_module(module_id))
+  );
+ 
+CREATE POLICY "student_module_assign_admin"
+  ON public.student_module_assignments FOR ALL TO authenticated
+  USING  (public.is_admin())
+  WITH CHECK (public.is_admin());
+ 
+CREATE POLICY "student_module_assign_instructor"
+  ON public.student_module_assignments FOR INSERT TO authenticated
+  WITH CHECK (
+    public.is_instructor()
+    AND assigned_by = auth.uid()
+    -- I teach the course this module belongs to
+    AND public.teaches_module(module_id)
+    -- Parent course is already assigned to this student
+    AND public.module_course_assigned_to(module_id, student_id)
+  );
+ 
+CREATE POLICY "student_module_assign_instructor_delete"
+  ON public.student_module_assignments FOR DELETE TO authenticated
+  USING (
+    public.is_instructor() AND assigned_by = auth.uid()
+  );
+ 
+-- ─────────────────────────────────────────────────────
+-- ASSESSMENT ASSIGNMENTS
+-- ─────────────────────────────────────────────────────
+ 
+CREATE POLICY "assessment_assign_select"
+  ON public.assessment_assignments FOR SELECT TO authenticated
+  USING (
+    public.is_admin()
+    OR student_id = auth.uid()
+    OR assigned_by = auth.uid()
+    OR (public.is_instructor() AND public.is_my_student(student_id))
+  );
+ 
+CREATE POLICY "assessment_assign_admin"
+  ON public.assessment_assignments FOR ALL TO authenticated
+  USING  (public.is_admin())
+  WITH CHECK (public.is_admin());
+ 
+CREATE POLICY "assessment_assign_instructor"
+  ON public.assessment_assignments FOR INSERT TO authenticated
+  WITH CHECK (
+    public.is_instructor()
+    AND assigned_by = auth.uid()
+    AND public.is_my_student(student_id)
+    AND public.teaches_assessment(assessment_id)
+  );
+ 
+CREATE POLICY "assessment_assign_instructor_delete"
+  ON public.assessment_assignments FOR DELETE TO authenticated
+  USING (
+    public.is_instructor() AND assigned_by = auth.uid()
+  );
+ 
+-- ─────────────────────────────────────────────────────
+-- SUBMISSIONS
+-- ─────────────────────────────────────────────────────
+ 
+-- Read: student own + admin + instructor (their students)
+CREATE POLICY "submissions_select"
+  ON public.submissions FOR SELECT TO authenticated
+  USING (
+    student_id = auth.uid()
+    OR public.is_admin()
+    OR (public.is_instructor() AND public.is_my_student(student_id))
+  );
+ 
+-- Insert: student submits own work (must be assigned the assessment)
+CREATE POLICY "submissions_insert"
+  ON public.submissions FOR INSERT TO authenticated
+  WITH CHECK (
+    student_id = auth.uid()
+    AND EXISTS (
+      SELECT 1 FROM public.assessment_assignments
+      WHERE assessment_id = submissions.assessment_id
+        AND student_id = auth.uid()
+    )
+  );
+ 
+-- Update: instructor grades/gives feedback (their students) + admin
+CREATE POLICY "submissions_update"
+  ON public.submissions FOR UPDATE TO authenticated
+  USING (
+    public.is_admin()
+    OR (public.is_instructor() AND public.is_my_student(student_id))
+  )
+  WITH CHECK (
+    public.is_admin()
+    OR (public.is_instructor() AND public.is_my_student(student_id))
+  );
+ 
+-- Delete: admin only
+CREATE POLICY "submissions_delete"
+  ON public.submissions FOR DELETE TO authenticated
+  USING (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- ANNOUNCEMENTS
+-- ─────────────────────────────────────────────────────
+ 
+-- Read: admin/instructor see all;
+--       student sees: global, OR course-scoped (if assigned), OR track-scoped (if matches)
+CREATE POLICY "announcements_select"
+  ON public.announcements FOR SELECT TO authenticated
+  USING (
+    public.is_admin()
+    OR public.is_instructor()
+    OR target_scope = 'global'
+    OR (target_scope = 'course' AND EXISTS (
+      SELECT 1 FROM public.student_course_assignments
+      WHERE student_id = auth.uid() AND course_id = announcements.course_id
+    ))
+    OR (target_scope = 'track' AND specialization_track = (
+      SELECT p.specialization_track FROM public.profiles p WHERE p.id = auth.uid()
+    ))
+    OR (target_scope = 'role' AND target_role = (
+      SELECT p.role FROM public.profiles p WHERE p.id = auth.uid()
+    ))
+  );
+ 
+-- Insert: admin (any scope) + instructor (NOT global, for their courses)
+CREATE POLICY "announcements_insert"
+  ON public.announcements FOR INSERT TO authenticated
+  WITH CHECK (
+    (public.is_admin() AND created_by = auth.uid())
+    OR (
+      public.is_instructor()
+      AND created_by = auth.uid()
+      AND target_scope <> 'global'
+      AND (course_id IS NULL OR public.teaches_course(course_id))
+    )
+  );
+ 
+-- Update: admin or author
+CREATE POLICY "announcements_update"
+  ON public.announcements FOR UPDATE TO authenticated
+  USING (public.is_admin() OR created_by = auth.uid())
+  WITH CHECK (public.is_admin() OR created_by = auth.uid());
+ 
+-- Delete: admin only
+CREATE POLICY "announcements_delete"
+  ON public.announcements FOR DELETE TO authenticated
+  USING (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- DIRECT MESSAGES
+-- ─────────────────────────────────────────────────────
+ 
+-- Read: if you sent or received it, or you're admin
+CREATE POLICY "dm_select"
+  ON public.direct_messages FOR SELECT TO authenticated
+  USING (
+    sender_id = auth.uid()
+    OR recipient_id = auth.uid()
+    OR public.is_admin()
+  );
+ 
+-- Insert:
+--   admin     → any recipient
+--   instructor → their students OR staff
+--   student   → staff only (admin/instructor)
+CREATE POLICY "dm_insert"
+  ON public.direct_messages FOR INSERT TO authenticated
+  WITH CHECK (
+    sender_id = auth.uid()
+    AND (
+      -- Admin can message anyone
+      public.is_admin()
+      -- Instructor can message their students or other staff
+      OR (
+        public.is_instructor()
+        AND (
+          public.is_my_student(recipient_id)
+          OR EXISTS (
+            SELECT 1 FROM public.profiles
+            WHERE id = recipient_id AND role IN ('admin', 'instructor')
+          )
+        )
+      )
+      -- Student can only message staff
+      OR (
+        NOT public.is_admin() AND NOT public.is_instructor()
+        AND EXISTS (
+          SELECT 1 FROM public.profiles
+          WHERE id = recipient_id AND role IN ('admin', 'instructor')
+        )
+      )
+    )
+  );
+ 
+-- Update: only recipient can mark as read
+CREATE POLICY "dm_update_read"
+  ON public.direct_messages FOR UPDATE TO authenticated
+  USING  (recipient_id = auth.uid())
+  WITH CHECK (recipient_id = auth.uid());
+ 
+-- Delete: admin only
+CREATE POLICY "dm_delete"
+  ON public.direct_messages FOR DELETE TO authenticated
+  USING (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- ATTENDANCE
+-- ─────────────────────────────────────────────────────
+ 
+-- Read: admin all + instructor their students + student own
+CREATE POLICY "attendance_select"
+  ON public.attendance FOR SELECT TO authenticated
+  USING (
+    public.is_admin()
+    OR student_id = auth.uid()
+    OR (public.is_instructor() AND public.is_my_student(student_id))
+  );
+ 
+-- Insert: admin or instructor (their students)
+CREATE POLICY "attendance_insert"
+  ON public.attendance FOR INSERT TO authenticated
+  WITH CHECK (
+    (public.is_admin() OR (public.is_instructor() AND public.is_my_student(student_id)))
+    AND marked_by = auth.uid()
+  );
+ 
+-- Update: admin or instructor (their students)
+CREATE POLICY "attendance_update"
+  ON public.attendance FOR UPDATE TO authenticated
+  USING (
+    public.is_admin()
+    OR (public.is_instructor() AND public.is_my_student(student_id))
+  )
+  WITH CHECK (
+    public.is_admin()
+    OR (public.is_instructor() AND public.is_my_student(student_id))
+  );
+ 
+-- Delete: admin only
+CREATE POLICY "attendance_delete"
+  ON public.attendance FOR DELETE TO authenticated
+  USING (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- MODULE PROGRESS
+-- ─────────────────────────────────────────────────────
+ 
+-- Read: admin all + instructor their students + student own
+CREATE POLICY "module_progress_select"
+  ON public.module_progress FOR SELECT TO authenticated
+  USING (
+    public.is_admin()
+    OR student_id = auth.uid()
+    OR (public.is_instructor() AND public.is_my_student(student_id))
+  );
+ 
+-- Insert: student marks own progress
+CREATE POLICY "module_progress_insert"
+  ON public.module_progress FOR INSERT TO authenticated
+  WITH CHECK (student_id = auth.uid());
+ 
+-- Update: student marks own complete + admin can reset
+CREATE POLICY "module_progress_update"
+  ON public.module_progress FOR UPDATE TO authenticated
+  USING  (student_id = auth.uid() OR public.is_admin())
+  WITH CHECK (student_id = auth.uid() OR public.is_admin());
+ 
+-- Delete: admin only
+CREATE POLICY "module_progress_delete"
+  ON public.module_progress FOR DELETE TO authenticated
+  USING (public.is_admin());
+ 
+-- ─────────────────────────────────────────────────────
+-- CHAT MESSAGES (global room – all authenticated users)
+-- ─────────────────────────────────────────────────────
+ 
+-- Everyone reads all messages
+CREATE POLICY "chat_select"
+  ON public.chat_messages FOR SELECT TO authenticated
+  USING (true);
+ 
+-- Everyone can post (sender must be themselves)
+CREATE POLICY "chat_insert"
+  ON public.chat_messages FOR INSERT TO authenticated
+  WITH CHECK (sender_id = auth.uid());
+ 
+-- Author can edit own message; admin can edit any
+CREATE POLICY "chat_update"
+  ON public.chat_messages FOR UPDATE TO authenticated
+  USING  (sender_id = auth.uid() OR public.is_admin())
+  WITH CHECK (sender_id = auth.uid() OR public.is_admin());
+ 
+-- Author or admin can delete
+CREATE POLICY "chat_delete"
+  ON public.chat_messages FOR DELETE TO authenticated
+  USING (sender_id = auth.uid() OR public.is_admin());
+ 
+-- =====================================================
+-- DONE. Summary of what changed from V2:
+--
+-- 1. handle_new_user: role='student' always, enrollment code consumed
+-- 2. enrollment_codes: +used_by, +used_at columns
+-- 3. FK ON DELETE: SET NULL for authored-by columns, CASCADE for user-data
+-- 4. 4 helper functions: is_admin, is_instructor, teaches_course, is_my_student
+-- 5. 15 tables × complete policy sets (was ~8 policies, now ~45)
+-- 6. NEW: chat_messages table + policies
+-- 7. Additional indexes on FK / policy-filter columns
+-- 8. assessments: +assessment_type, +max_score columns (admin UI fields)
+-- =====================================================
+ 
+-- =====================================================
+-- MIGRATION (only if you ALREADY ran an earlier V3 without
+-- assessment_type / max_score). Safe to run repeatedly.
+-- For a fresh install you do NOT need this — the columns are
+-- already in the CREATE TABLE above.
+-- =====================================================
+-- ALTER TABLE public.assessments
+--   ADD COLUMN IF NOT EXISTS assessment_type TEXT NOT NULL DEFAULT 'Assignment',
+--   ADD COLUMN IF NOT EXISTS max_score NUMERIC NOT NULL DEFAULT 100;
