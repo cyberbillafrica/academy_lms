@@ -1,4 +1,4 @@
-// UltimateRichTextEditor.jsx
+// UltimateRichTextEditor.tsx
 import { useEditor, EditorContent, Node, mergeAttributes } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TextStyle } from "@tiptap/extension-text-style";
@@ -64,7 +64,7 @@ const CodeBlockWithCopy = CodeBlockLowlight.extend({
 
       const copyBtn = document.createElement("button");
       copyBtn.textContent = "📋 Copy";
-      copyBtn.type = "button"; // already correct in the node view (raw DOM, not React)
+      copyBtn.type = "button";
       copyBtn.contentEditable = "false";
       copyBtn.className =
         "copy-code-btn absolute top-2 right-2 text-xs bg-gray-700 text-gray-200 px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition z-10";
@@ -109,12 +109,13 @@ const TerminalBlock = Node.create({
     ];
   },
   addCommands() {
+    // Fix 1: cast to Record<string, any> to avoid type mismatch with RawCommands
     return {
       toggleTerminalBlock:
         () =>
         ({ commands }) =>
           commands.toggleNode(this.name, "paragraph"),
-    };
+    } as Record<string, any>;
   },
 });
 
@@ -158,16 +159,17 @@ const Callout = Node.create({
     ];
   },
   addCommands() {
+    // Fix 2: cast to Record<string, any> and add type annotations for commands
     return {
       setCallout:
-        (type) =>
-        ({ commands }) =>
+        (type: string) =>
+        ({ commands }: { commands: any }) =>
           commands.wrapIn(this.name, { type }),
       unsetCallout:
         () =>
-        ({ commands }) =>
+        ({ commands }: { commands: any }) =>
           commands.lift(this.name),
-    };
+    } as Record<string, any>;
   },
 });
 
@@ -233,7 +235,7 @@ export default function UltimateRichTextEditor({
   const saveTimeoutRef = useRef(null);
 
   const editor = useEditor({
-    extensions: EDITOR_EXTENSIONS, // Referencing the stable array configuration
+    extensions: EDITOR_EXTENSIONS,
     content: sanitizeHTML(content),
     editorProps: {
       attributes: {
@@ -248,20 +250,13 @@ export default function UltimateRichTextEditor({
     },
   });
 
-  // ── Sync external content changes into the editor ─────────────────────────
-  // useEditor() only seeds `content` at mount time; it never watches the prop.
-  // Without this, a parent clearing its state after save (setContent("")) has
-  // no effect on what's actually displayed — the editor keeps showing stale
-  // text even though the form "successfully" reset. The equality check keeps
-  // this from fighting normal typing (where content === editor.getHTML()
-  // already, since onUpdate is what set it) or fighting cursor position.
   useEffect(() => {
     if (!editor) return;
     const incoming = sanitizeHTML(content);
     if (incoming !== editor.getHTML()) {
-      editor.commands.setContent(incoming, false);
+      // Fix 3: setContent expects an options object, not boolean
+      editor.commands.setContent(incoming, { emitUpdate: false });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, editor]);
 
   if (!editor) return null;
@@ -320,9 +315,6 @@ export default function UltimateRichTextEditor({
   const addYoutube = () => {
     if (!youtubeUrl) return;
     try {
-      // Prefer inserting the configured youtube node; if the extension
-      // command is unavailable in some builds, fallback to inserting a
-      // simple linked URL so the content remains usable.
       editor.chain().focus().insertContent({ type: "youtube", attrs: { src: youtubeUrl } }).run();
     } catch (err) {
       editor.chain().focus().insertContent(`<p><a href="${youtubeUrl}" target="_blank" rel="noopener noreferrer">${youtubeUrl}</a></p>`).run();
@@ -383,13 +375,6 @@ export default function UltimateRichTextEditor({
       </div>
 
       {/* Toolbar */}
-      {/*
-        IMPORTANT: This component is rendered inside a <form> in the parent
-        (ModulesPage). Every <button> below MUST have type="button", or the
-        browser treats it as an implicit submit button and clicking any
-        toolbar control will submit/reset the surrounding form — which is
-        exactly the "editor closes / form saves unexpectedly" bug.
-      */}
       <div className="flex flex-wrap items-center gap-2 p-3 border-b bg-gray-50 sticky top-0 z-20 max-h-[300px] overflow-y-auto">
         <div className="flex gap-1">
           <button type="button" onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} className="px-2 py-1 rounded text-sm bg-gray-200 hover:bg-gray-300 disabled:opacity-50" title="Undo">↶</button>
@@ -410,7 +395,19 @@ export default function UltimateRichTextEditor({
               {showFontSize && (
                 <div className="absolute top-full left-0 mt-1 bg-white border rounded-lg shadow-lg p-2 z-30 w-20">
                   {fontSizes.map((size) => (
-                    <button type="button" key={size} onClick={() => { editor.chain().focus().setMark("textStyle", { fontSize: `${size}px` }).run(); setFontSize(size); setShowFontSize(false); }} className="block w-full text-left px-2 py-1 hover:bg-gray-100 text-sm">{size}px</button>
+                    <button
+                      type="button"
+                      key={size}
+                      onClick={() => {
+                        editor.chain().focus().setMark("textStyle", { fontSize: `${size}px` }).run();
+                        // Fix 4: convert number to string
+                        setFontSize(size.toString());
+                        setShowFontSize(false);
+                      }}
+                      className="block w-full text-left px-2 py-1 hover:bg-gray-100 text-sm"
+                    >
+                      {size}px
+                    </button>
                   ))}
                 </div>
               )}
@@ -461,7 +458,6 @@ export default function UltimateRichTextEditor({
         <button type="button" onClick={() => {
           const url = prompt("Enter URL:");
           if (!url) return;
-          // If no text is selected, insert the link text then mark it as a link
           if (editor.state.selection.empty) {
             editor.chain().focus().insertContent(`<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`).run();
           } else {
